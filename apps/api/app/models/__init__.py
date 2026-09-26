@@ -1,0 +1,31 @@
+from app.models.entities import (
+    User,
+    Customer,
+    Subscription,
+    Transaction,
+    SupportTicket,
+    Conversation,
+    Message,
+    AgentRun,
+    ActionProposal,
+    Approval,
+    ExecutedAction,
+    HumanQueue,
+    AuditEvent,
+)
+
+__all__ = [
+    "User",
+    "Customer",
+    "Subscription",
+    "Transaction",
+    "SupportTicket",
+    "Conversation",
+    "Message",
+    "AgentRun",
+    "ActionProposal",
+    "Approval",
+    "ExecutedAction",
+    "HumanQueue",
+    "AuditEvent",
+]

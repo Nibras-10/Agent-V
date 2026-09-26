@@ -1,0 +1,24 @@
+.env
+*.db
+*.db-journal
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# Node
+apps/web/node_modules/
+apps/web/.next/
+
+# venv
+.venv/
+
+# Alembic
+migrations/__pycache__/
