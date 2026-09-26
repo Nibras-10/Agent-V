@@ -66,7 +66,7 @@ class WorkflowService:
         graph = build_support_graph(self.db)
         final_state = await graph.ainvoke(
             initial_state,
-            config={"configurable": {"thread_id": f"thread_{ticket.id}"}},
+            config={"configurable": {"thread_id": f"thread_{agent_run.id}"}},
         )
 
         final_response_text = final_state.get(

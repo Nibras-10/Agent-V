@@ -1,3 +1,5 @@
+import asyncio
+import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -5,6 +7,10 @@ from fastapi import FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import sentry_sdk
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from app.core.config import settings
 from app.core.database import engine, Base
@@ -17,6 +23,7 @@ from app.api.v1.approval_router import router as approval_router
 from app.api.v1.handoff_router import router as handoff_router
 from app.api.v1.audit_router import router as audit_router
 from app.api.v1.health_router import router as health_router
+from app.agents.checkpointer import set_checkpointer
 
 
 @asynccontextmanager
@@ -44,12 +51,19 @@ async def lifespan(app: FastAPI):
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 
-    # Initialize Redis connection (with fallback)
     await redis_client.init()
 
-    yield
+    if settings.is_production:
+        async with AsyncPostgresSaver.from_conn_string(settings.checkpoint_database_url) as checkpointer:
+            await checkpointer.setup()
+            set_checkpointer(checkpointer)
+            try:
+                yield
+            finally:
+                set_checkpointer(None)
+    else:
+        yield
 
-    # Cleanup
     await redis_client.close()
     await engine.dispose()
     logger.info("API shutdown complete.")

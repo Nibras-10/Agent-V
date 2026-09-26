@@ -1,10 +1,15 @@
 from typing import Literal
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.state import SupportState
 from app.agents.nodes.nodes import SupportWorkflowNodes
+from app.agents.checkpointer import get_checkpointer
+
+
+_memory_checkpointer = MemorySaver()
 
 
 def route_after_triage(state: SupportState) -> Literal["retrieve_context", "handoff", "finalize"]:
@@ -42,7 +47,13 @@ def route_after_policy(state: SupportState) -> Literal["approval_interrupt", "dr
     return "finalize"
 
 
-def build_support_graph(db: AsyncSession, checkpointer: MemorySaver | None = None):
+def route_after_approval(state: SupportState) -> Literal["execute_action", "finalize"]:
+    if state.get("approval_decision") == "APPROVE":
+        return "execute_action"
+    return "finalize"
+
+
+def build_support_graph(db: AsyncSession, checkpointer: BaseCheckpointSaver | None = None):
     workflow_nodes = SupportWorkflowNodes(db)
     builder = StateGraph(SupportState)
 
@@ -99,8 +110,14 @@ def build_support_graph(db: AsyncSession, checkpointer: MemorySaver | None = Non
         },
     )
 
-    # Approval interrupt stops graph when waiting
-    builder.add_edge("approval_interrupt", "finalize")
+    builder.add_conditional_edges(
+        "approval_interrupt",
+        route_after_approval,
+        {
+            "execute_action": "execute_action",
+            "finalize": "finalize",
+        },
+    )
 
     # Execution flow (when resumed after approval)
     builder.add_edge("execute_action", "draft_response")
@@ -109,6 +126,6 @@ def build_support_graph(db: AsyncSession, checkpointer: MemorySaver | None = Non
     builder.add_edge("finalize", END)
 
     if checkpointer is None:
-        checkpointer = MemorySaver()
+        checkpointer = get_checkpointer() or _memory_checkpointer
 
     return builder.compile(checkpointer=checkpointer)

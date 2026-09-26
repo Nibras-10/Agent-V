@@ -21,6 +21,7 @@ from app.policies.contact_policy import ContactPolicy
 from app.schemas.actions import RefundProposalPayload, CancellationProposalPayload, ContactUpdatePayload
 from app.core.config import settings
 from app.observability.logging import logger
+from langgraph.types import interrupt
 
 
 class SupportWorkflowNodes:
@@ -266,9 +267,14 @@ class SupportWorkflowNodes:
 
     async def approval_interrupt(self, state: SupportState) -> Dict[str, Any]:
         """Interrupt point for Human-In-The-Loop. Graph pauses here until reviewed."""
-        # If approval_id is set and status is WAITING_FOR_APPROVAL, this node pauses execution
+        decision = interrupt({
+            "approval_id": state.get("approval_id"),
+            "message": "Waiting for human reviewer approval",
+        })
         return {
-            "status": "WAITING_FOR_APPROVAL",
+            "approval_decision": decision.get("decision") if isinstance(decision, dict) else decision,
+            "approval_reviewer_id": decision.get("reviewer_id") if isinstance(decision, dict) else None,
+            "status": "RUNNING",
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -279,7 +285,7 @@ class SupportWorkflowNodes:
             return {"status": "FAILED", "last_error_code": "NO_APPROVAL_ID"}
 
         customer_id = state.get("customer_id", "")
-        actor_id = state.get("authenticated_actor_id", "")
+        actor_id = state.get("approval_reviewer_id") or state.get("authenticated_actor_id", "")
         ticket_id = state.get("ticket_id", "")
         run_id = state.get("run_id", "")
 

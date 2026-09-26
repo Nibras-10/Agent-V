@@ -14,6 +14,8 @@ class SupportState(TypedDict, total=False):
     retrieved_context: Dict[str, Any]
     proposed_action: Optional[Dict[str, Any]]
     approval_id: Optional[str]
+    approval_decision: Optional[str]
+    approval_reviewer_id: Optional[str]
     action_result: Optional[Dict[str, Any]]
     risk_level: str  # "LOW", "HIGH"
     retry_count: int

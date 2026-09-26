@@ -21,7 +21,7 @@ RUN groupadd -g 1000 appgroup && \
     useradd -u 1000 -g appgroup -s /bin/bash -m appuser
 
 COPY --from=builder /app/wheels /wheels
-RUN pip install --no-cache-dir /wheels/* uvicorn fastapi pydantic pydantic-settings sqlalchemy alembic asyncpg aiosqlite redis pyjwt argon2-cffi httpx email-validator langgraph langchain-core opentelemetry-api opentelemetry-sdk python-dotenv cryptography sentry-sdk
+RUN pip install --no-cache-dir /wheels/* uvicorn fastapi pydantic pydantic-settings sqlalchemy alembic asyncpg aiosqlite redis pyjwt argon2-cffi httpx email-validator langgraph langgraph-checkpoint-postgres psycopg[binary,pool] langchain-core opentelemetry-api opentelemetry-sdk python-dotenv cryptography sentry-sdk
 
 COPY apps/api /app/apps/api
 COPY pyproject.toml /app/pyproject.toml

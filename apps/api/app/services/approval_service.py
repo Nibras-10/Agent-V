@@ -13,6 +13,8 @@ from app.repositories.audit_repo import AuditRepository
 from app.tools.action_tools import ActionTools
 from app.schemas.actions import compute_proposal_hash, ActionResult
 from app.observability.logging import logger
+from app.agents.graph import build_support_graph
+from langgraph.types import Command
 
 
 class ApprovalService:
@@ -90,6 +92,11 @@ class ApprovalService:
                 ticket_id=approval.ticket_id,
                 metadata={"comment": comment},
             )
+            graph = build_support_graph(self.db)
+            await graph.ainvoke(
+                Command(resume={"decision": "REJECT", "reviewer_id": reviewer.id}),
+                config={"configurable": {"thread_id": f"thread_{proposal.run_id}"}},
+            )
             return {"status": "REJECTED", "message": "Proposal was rejected by reviewer", "approval": updated}
 
         # If decision is APPROVE:
@@ -120,29 +127,21 @@ class ApprovalService:
                 detail="Approval was already resolved or expired",
             )
 
-        # 5. Execute action idempotently
-        action_tools = ActionTools(
-            db=self.db,
-            authenticated_actor_id=reviewer.id,
-            authenticated_customer_id=ticket.customer_id,
-            ticket_id=approval.ticket_id,
-            run_id=proposal.run_id,
+        graph = build_support_graph(self.db)
+        final_state = await graph.ainvoke(
+            Command(resume={"decision": "APPROVE", "reviewer_id": reviewer.id}),
+            config={"configurable": {"thread_id": f"thread_{proposal.run_id}"}},
         )
+        action_result = final_state.get("action_result") or {}
+        exec_success = action_result.get("success", action_result.get("status") == "SUCCESS")
 
-        if proposal.type == "refund":
-            exec_res = await action_tools.execute_approved_refund(approval_id)
-        elif proposal.type == "cancellation":
-            exec_res = await action_tools.execute_approved_cancellation(approval_id)
-        else:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported proposal action type")
-
-        if exec_res.success:
+        if exec_success:
             await self.ticket_repo.update_status(approval.ticket_id, "resolved")
         else:
             await self.ticket_repo.update_status(approval.ticket_id, "failed")
 
         return {
             "status": "APPROVED",
-            "message": exec_res.message,
-            "action_result": exec_res.model_dump(),
+            "message": action_result.get("message", "Approval resumed through the workflow"),
+            "action_result": action_result,
         }
