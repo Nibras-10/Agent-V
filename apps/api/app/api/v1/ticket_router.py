@@ -1,3 +1,4 @@
+from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,6 +12,27 @@ from app.schemas.ticket import SupportTicketResponse, ConversationResponse, Mess
 from app.repositories.ticket_repo import TicketRepository
 
 router = APIRouter(prefix="/tickets", tags=["Tickets"])
+
+
+@router.get("", response_model=List[SupportTicketResponse])
+async def list_tickets(
+    current_user: User = Depends(require_scope("ticket:read")),
+    db: AsyncSession = Depends(get_db),
+):
+    tickets = await TicketRepository(db).list_by_customer(current_user.customer_id or "")
+    return [
+        SupportTicketResponse(
+            id=ticket.id,
+            customer_id=ticket.customer_id,
+            status=ticket.status,
+            priority=ticket.priority,
+            subject=ticket.subject,
+            created_at=ticket.created_at,
+            updated_at=ticket.updated_at,
+            conversations=[],
+        )
+        for ticket in tickets
+    ]
 
 
 @router.get("/{id}", response_model=SupportTicketResponse)
