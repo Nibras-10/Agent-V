@@ -1,6 +1,7 @@
 import uuid
 from typing import Dict, Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import HTTPException, status
 
 from app.models.entities import User, Conversation, SupportTicket, Message
 from app.repositories.ticket_repo import TicketRepository, ConversationRepository
@@ -33,6 +34,9 @@ class WorkflowService:
         if not ticket:
             raise ValueError(f"Associated ticket {conv.ticket_id} not found")
 
+        if user.role != "customer" or not user.customer_id or user.customer_id != ticket.customer_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Authenticated customer does not own this ticket")
+
         # 1. Record customer message
         customer_msg = await self.conv_repo.add_message(
             conversation_id=conversation_id,
@@ -50,7 +54,7 @@ class WorkflowService:
             "conversation_id": conversation_id,
             "ticket_id": ticket.id,
             "authenticated_actor_id": user.id,
-            "customer_id": user.customer_id or ticket.customer_id,
+            "customer_id": user.customer_id,
             "messages": [
                 {"role": m.actor_type, "content": m.content}
                 for m in conv.messages

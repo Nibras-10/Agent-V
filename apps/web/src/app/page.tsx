@@ -25,6 +25,7 @@ interface Approval {
   proposal_payload: any;
   proposal_hash: string;
   status: string;
+  reviewer_id?: string;
   reviewer_comment?: string;
   created_at: string;
   expires_at: string;
@@ -51,11 +52,13 @@ interface AuditItem {
 
 export default function Home() {
   const [token, setToken] = useState<string | null>(null);
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [authMode, setAuthMode] = useState<'login' | 'register' | 'forgot' | 'reset'>('login');
   const [authName, setAuthName] = useState('');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authError, setAuthError] = useState('');
+  const [authSuccess, setAuthSuccess] = useState('');
+  const [resetToken, setResetToken] = useState('');
   const [notice, setNotice] = useState('');
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [activeTab, setActiveTab] = useState<'chat' | 'approvals' | 'handoffs' | 'audit'>('chat');
@@ -74,34 +77,54 @@ export default function Home() {
   const [decisionComment, setDecisionComment] = useState('');
   const [selectedTicketForAudit, setSelectedTicketForAudit] = useState('');
 
-  // Authenticate against the API; customer registration creates a real database account.
+  // Authenticate, register customers, and handle verification/recovery links.
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
-    setIsLoading(true); setAuthError('');
+    setIsLoading(true); setAuthError(''); setAuthSuccess('');
     try {
-      const registering = authMode === 'register';
-      const res = await fetch(`${API_BASE}/api/v1/auth/${registering ? 'register' : 'token'}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(registering ? { name: authName, email: authEmail, password: authPassword } : { email: authEmail, password: authPassword }),
+      const routes = { login: '/token', register: '/register', forgot: '/password/forgot', reset: '/password/reset' } as const;
+      const body = authMode === 'register'
+        ? { name: authName, email: authEmail, password: authPassword }
+        : authMode === 'login' || authMode === 'forgot'
+          ? { email: authEmail, password: authPassword }
+          : { token: resetToken, new_password: authPassword };
+      const res = await fetch(`${API_BASE}/api/v1/auth${routes[authMode]}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       });
-      if (!res.ok) { const error = await res.json().catch(() => ({})); throw new Error(error.detail || 'Unable to authenticate. Check your details and try again.'); }
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || 'Unable to complete this request.');
+      if (authMode === 'forgot') { setAuthSuccess(data.detail); return; }
+      if (authMode === 'reset') { setAuthSuccess(data.detail); setAuthMode('login'); setAuthPassword(''); return; }
+      if (authMode === 'register' && !data.access_token) { setAuthSuccess(data.detail); setAuthMode('login'); setAuthPassword(''); return; }
       const meRes = await fetch(`${API_BASE}/api/v1/auth/me`, { headers: { Authorization: `Bearer ${data.access_token}` } });
       if (!meRes.ok) throw new Error('Your account could not be loaded. Please sign in again.');
       const meData = await meRes.json();
       sessionStorage.setItem('agent-v-token', data.access_token);
-      setToken(data.access_token); setCurrentUser(meData); setActiveTab(meData.role === 'customer' ? 'chat' : meData.role === 'auditor' ? 'audit' : 'approvals'); setAuthError('');
+      setToken(data.access_token); setCurrentUser(meData);
+      setActiveTab(meData.role === 'customer' ? 'chat' : meData.role === 'auditor' ? 'audit' : 'approvals');
     } catch (err: any) { setAuthError(err.message || 'Something went wrong. Please try again.'); }
     finally { setIsLoading(false); }
   };
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const verifyToken = params.get('verify_email');
+    const passwordToken = params.get('reset_password');
+    if (verifyToken) {
+      window.history.replaceState({}, '', window.location.pathname);
+      fetch(`${API_BASE}/api/v1/auth/verify-email`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: verifyToken }),
+      }).then(async res => { const data = await res.json(); if (!res.ok) throw new Error(data.detail); setAuthSuccess(data.detail); })
+        .catch(err => setAuthError(err.message || 'Verification link is invalid or expired.'));
+    }
+    if (passwordToken) { setResetToken(passwordToken); setAuthMode('reset'); window.history.replaceState({}, '', window.location.pathname); }
     const savedToken = sessionStorage.getItem('agent-v-token');
-    if (!savedToken) return;
-    fetch(`${API_BASE}/api/v1/auth/me`, { headers: { Authorization: `Bearer ${savedToken}` } })
-      .then(async (res) => { if (!res.ok) throw new Error('Session expired'); return res.json(); })
-      .then((user) => { setToken(savedToken); setCurrentUser(user); setActiveTab(user.role === 'customer' ? 'chat' : user.role === 'auditor' ? 'audit' : 'approvals'); })
-      .catch(() => sessionStorage.removeItem('agent-v-token'));
+    if (savedToken) {
+      fetch(`${API_BASE}/api/v1/auth/me`, { headers: { Authorization: `Bearer ${savedToken}` } })
+        .then(async res => { if (!res.ok) throw new Error('Session expired'); return res.json(); })
+        .then(user => { setToken(savedToken); setCurrentUser(user); setActiveTab(user.role === 'customer' ? 'chat' : user.role === 'auditor' ? 'audit' : 'approvals'); })
+        .catch(() => sessionStorage.removeItem('agent-v-token'));
+    }
   }, []);
 
   const handleLogout = () => { sessionStorage.removeItem('agent-v-token'); setToken(null); setCurrentUser(null); setMessages([]); };
@@ -445,6 +468,8 @@ export default function Home() {
                                   Reject
                                 </button>
                               </div>
+                            ) : appr.status === 'APPROVED' && appr.reviewer_id === currentUser?.id ? (
+                              <button className="btn btn-outline" onClick={() => handleDecision(appr.id, 'APPROVE')} disabled={isLoading}>Retry / verify</button>
                             ) : (
                               <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Resolved</span>
                             )}
@@ -555,16 +580,19 @@ export default function Home() {
             </section>
             <section className="auth-card">
               <div className="auth-icon">A</div><div className="auth-kicker">WELCOME TO AGENT V</div>
-              <h2>{authMode === 'login' ? 'Sign in' : 'Create your account'}</h2>
-              <p className="auth-subtitle">{authMode === 'login' ? 'Enter your details to continue.' : 'A few details and we will get you started.'}</p>
+              <h2>{authMode === 'login' ? 'Sign in' : authMode === 'register' ? 'Create your account' : authMode === 'forgot' ? 'Reset your password' : 'Choose a new password'}</h2>
+              <p className="auth-subtitle">{authMode === 'login' ? 'Enter your details to continue.' : authMode === 'register' ? 'A few details and we will get you started.' : authMode === 'forgot' ? 'We will email a secure reset link if your account exists.' : 'Choose a password with at least 12 characters.'}</p>
               <form onSubmit={handleAuth} className="auth-form">
                 {authMode === 'register' && <label>Full name<input value={authName} onChange={e => setAuthName(e.target.value)} autoComplete="name" minLength={2} maxLength={100} placeholder="Your name" required /></label>}
-                <label>Email address<input type="email" value={authEmail} onChange={e => setAuthEmail(e.target.value)} autoComplete="email" placeholder="name@example.com" required /></label>
-                <label>Password<input type="password" value={authPassword} onChange={e => setAuthPassword(e.target.value)} autoComplete={authMode === 'login' ? 'current-password' : 'new-password'} minLength={authMode === 'register' ? 12 : 1} maxLength={128} placeholder={authMode === 'register' ? 'At least 12 characters' : 'Your password'} required /></label>
+                {(authMode === 'login' || authMode === 'register' || authMode === 'forgot') && <label>Email address<input type="email" value={authEmail} onChange={e => setAuthEmail(e.target.value)} autoComplete="email" placeholder="name@example.com" required /></label>}
+                {authMode !== 'forgot' && <label>Password<input type="password" value={authPassword} onChange={e => setAuthPassword(e.target.value)} autoComplete={authMode === 'login' ? 'current-password' : 'new-password'} minLength={authMode === 'register' || authMode === 'reset' ? 12 : 1} maxLength={128} placeholder={authMode === 'register' || authMode === 'reset' ? 'At least 12 characters' : 'Your password'} required /></label>}
                 {authError && <div className="auth-error" role="alert">{authError}</div>}
-                <button className="btn btn-primary auth-submit" type="submit" disabled={isLoading}>{isLoading ? 'Please wait...' : authMode === 'login' ? 'Continue' : 'Create account'} <span>-&gt;</span></button>
+                {authSuccess && <div className="auth-success" role="status">{authSuccess}</div>}
+                <button className="btn btn-primary auth-submit" type="submit" disabled={isLoading}>{isLoading ? 'Please wait...' : authMode === 'login' ? 'Continue' : authMode === 'register' ? 'Create account' : authMode === 'forgot' ? 'Send reset link' : 'Save new password'} <span>-&gt;</span></button>
               </form>
-              <div className="auth-switch">{authMode === 'login' ? 'New to Agent V?' : 'Already have an account?'} <button onClick={() => { setAuthMode(authMode === 'login' ? 'register' : 'login'); setAuthError(''); }}>{authMode === 'login' ? 'Create an account' : 'Sign in'}</button></div>
+              {authMode === 'login' && <div className="auth-forgot"><button onClick={() => { setAuthMode('forgot'); setAuthError(''); setAuthSuccess(''); }}>Forgot password?</button></div>}
+              <div className="auth-switch">{authMode === 'login' || authMode === 'forgot' ? 'New to Agent V?' : 'Already have an account?'} <button onClick={() => { setAuthMode(authMode === 'register' ? 'login' : authMode === 'forgot' || authMode === 'reset' ? 'login' : 'register'); setAuthError(''); setAuthSuccess(''); }}>{authMode === 'register' || authMode === 'forgot' || authMode === 'reset' ? 'Sign in' : 'Create an account'}</button></div>
+              {authError.includes('Verify your email') && <div className="auth-forgot"><button onClick={async () => { if (!authEmail) return; const r = await fetch(`${API_BASE}/api/v1/auth/verification/resend`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: authEmail }) }); const d = await r.json(); setAuthError(''); setAuthSuccess(d.detail); }}>Resend verification email</button></div>}
               <div className="auth-terms">By continuing, you agree to our <a href="#">Terms</a> and <a href="#">Privacy Policy</a>.</div>
             </section>
             <footer className="auth-footer">2026 Agent V <span>Secure customer support</span></footer>

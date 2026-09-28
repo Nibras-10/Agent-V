@@ -16,6 +16,8 @@ class Settings(BaseSettings):
 
     # Database
     DATABASE_URL: str = "sqlite+aiosqlite:///./agent_v.db"
+    CHECKPOINT_DATABASE_URL: str = ""
+    ALLOWED_HOSTS: str = "localhost,127.0.0.1"
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
@@ -25,7 +27,22 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_ISSUER: str = "agent-v-auth"
     JWT_AUDIENCE: str = "agent-v-api"
-    ACCESS_TOKEN_MINUTES: int = 60
+    ACCESS_TOKEN_MINUTES: int = 30
+    AUTH_TOKEN_TTL_MINUTES: int = 60
+    PASSWORD_RESET_TTL_MINUTES: int = 30
+    FRONTEND_URL: str = "http://localhost:3000"
+
+    # SMTP (required in production for verification and recovery)
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM_EMAIL: str = ""
+    SMTP_USE_STARTTLS: bool = True
+
+    # Financial action provider contract. The provider must honor Idempotency-Key.
+    ACTION_GATEWAY_URL: str = ""
+    ACTION_GATEWAY_API_KEY: str = ""
 
     # LLM Settings
     LLM_PROVIDER: str = "fake"  # 'fake', 'openai', 'gemini', etc.
@@ -55,12 +72,35 @@ class Settings(BaseSettings):
         return [origin.strip() for origin in self.CORS_ALLOWED_ORIGINS.split(",") if origin.strip()]
 
     @property
+    def allowed_hosts(self) -> List[str]:
+        return [host.strip() for host in self.ALLOWED_HOSTS.split(",") if host.strip()]
+
+    @property
     def is_production(self) -> bool:
         return self.APP_ENV.lower() == "production"
 
     @property
     def checkpoint_database_url(self) -> str:
-        return self.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
+        value = self.CHECKPOINT_DATABASE_URL or self.DATABASE_URL
+        return value.replace("postgresql+asyncpg://", "postgresql://", 1)
+
+    def validate_production(self) -> None:
+        if not self.DATABASE_URL.startswith("postgresql+asyncpg://"):
+            raise RuntimeError("Production requires a postgresql+asyncpg DATABASE_URL")
+        if not self.CHECKPOINT_DATABASE_URL.startswith("postgresql://"):
+            raise RuntimeError("Production requires an explicit psycopg PostgreSQL checkpoint URL")
+        if not self.JWT_SIGNING_KEY or len(self.JWT_SIGNING_KEY) < 32 or self.JWT_SIGNING_KEY.startswith("dev-"):
+            raise RuntimeError("Production requires a unique JWT_SIGNING_KEY of at least 32 characters")
+        if self.LLM_PROVIDER != "gemini" or not self.LLM_API_KEY or self.LLM_API_KEY.startswith(("your_", "mock-")):
+            raise RuntimeError("Production requires a configured Gemini API key")
+        if not all((self.SMTP_HOST, self.SMTP_USERNAME, self.SMTP_PASSWORD, self.SMTP_FROM_EMAIL)):
+            raise RuntimeError("Production requires SMTP credentials for account verification and recovery")
+        if not self.ACTION_GATEWAY_URL.startswith("https://") or not self.ACTION_GATEWAY_API_KEY:
+            raise RuntimeError("Production requires an HTTPS action gateway and API key")
+        if not self.CORS_ALLOWED_ORIGINS or "*" in self.CORS_ALLOWED_ORIGINS:
+            raise RuntimeError("Production CORS origins must be explicit")
+        if not self.ALLOWED_HOSTS or "*" in self.ALLOWED_HOSTS:
+            raise RuntimeError("Production ALLOWED_HOSTS must be explicit")
 
 
 settings = Settings()

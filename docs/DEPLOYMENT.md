@@ -1,89 +1,39 @@
 # Production Deployment
 
-## Architecture
+## Required services
 
-- Next.js frontend: Vercel
-- FastAPI backend: Azure App Service using `docker/Dockerfile.api`
-- PostgreSQL: Supabase
-- Redis: managed Redis using a TLS `rediss://` URL
-- Monitoring: separate Sentry projects for API and web
+- Next.js frontend behind Caddy (automatic HTTPS/TLS).
+- FastAPI API container (`docker/Dockerfile.api`), run as non-root.
+- Supabase PostgreSQL for application records and LangGraph checkpoints.
+- Redis 7 with authentication; production fails closed if Redis is unavailable.
+- SMTP for email verification and password recovery.
+- A live HTTPS action gateway that honors `Idempotency-Key` and supports the routes in `app/integrations/action_gateway.py`.
 
-## Required Secrets
+## Secrets and configuration
 
-Set these in Azure App Service Configuration. Do not commit them or place them in GitHub workflow files.
+Copy `.env.example` to a private deployment secret store. Never commit `.env` or put production secrets in source control. Compose requires `DOMAIN`, both database URLs, Redis password, unique JWT key (32+ random characters), Gemini key, SMTP credentials, and action gateway URL/key. Use Supabase's transaction pooler for `DATABASE_URL` (asyncpg URL) and a direct/session PostgreSQL endpoint for `CHECKPOINT_DATABASE_URL` (`postgresql://`, psycopg). Require TLS for both remote database connections and Redis (`rediss://` when managed Redis is used).
 
-```text
-APP_ENV=production
-DATABASE_URL=postgresql+asyncpg://...
-REDIS_URL=rediss://...
-JWT_SIGNING_KEY=<random production secret>
-LLM_PROVIDER=gemini
-LLM_MODEL=gemini-3.5-flash-lite
-LLM_API_KEY=<Gemini key>
-CORS_ALLOWED_ORIGINS=https://your-frontend-domain
-SENTRY_DSN=<backend Sentry DSN>
-SENTRY_ENVIRONMENT=production
-SENTRY_TRACES_SAMPLE_RATE=0.05
-```
+Set `CORS_ALLOWED_ORIGINS` and `ALLOWED_HOSTS` to exact domains. Caddy terminates TLS and sends traffic to private API/web services; only ports 80/443 are published. Keep provider/API keys in the platform's secret manager, rotate them, and restrict access to deployment operators.
 
-Set these in Vercel Project Settings -> Environment Variables:
+## Database migrations
 
-```text
-NEXT_PUBLIC_API_URL=https://your-api-domain
-NEXT_PUBLIC_SENTRY_DSN=<frontend Sentry DSN>
-NEXT_PUBLIC_SENTRY_ENVIRONMENT=production
-```
+Run migrations once from a trusted deployment job before rolling out the API. Do not run `Base.metadata.create_all` in production. Compose runs one `migrate` service to completion before starting the API; for other platforms, run `alembic upgrade head` once from the release pipeline before shifting traffic.
 
-## Database Migration
+The migration chain contains the full initial application schema plus auth/token and provider-reference changes. Check migration status before releasing and rehearse upgrades/restores against a staging Supabase project.
 
-Run migrations from a trusted deployment job or locally with production environment variables loaded:
+## Compose deployment
 
-```powershell
-$env:PYTHONPATH="apps/api"
-python -m alembic upgrade head
-```
+1. Point the DNS `DOMAIN` at the host and allow inbound 80/443.
+2. Configure every required variable in a protected `.env` (or inject via a secrets manager).
+3. Build and start `docker-compose.yml`; its one-shot migration service completes before the API starts.
+4. Confirm `/health/ready` is healthy and Caddy has issued a certificate.
+5. Create the first staff user from an operator shell with `PYTHONPATH=apps/api python scripts/provision_staff.py EMAIL reviewer` (or the intended least-privilege role). Password is entered interactively and hashed; no public staff registration exists.
+6. Verify auth email delivery, recovery, rate limiting, action-provider idempotency, database backup restore, and alerting in staging before launch.
 
-The API does not create production tables at startup. Migrations must complete before the new API version receives traffic.
+## Provider contract and action recovery
 
-## Azure App Service
+The action gateway accepts `POST /refunds` with `transaction_ref`, `amount_minor`, and `currency`, and `POST /subscriptions/{ref}/cancel` with `cancel_at_period_end`. It receives `Authorization: Bearer …` and a stable `Idempotency-Key`; a refund response must include `status: succeeded` or `refunded`, and a cancellation response must include `canceled`, `cancelled`, or `scheduled` as applicable. Configure provider-side key retention longer than the maximum approval/reconciliation period. Import authoritative processor references into `transactions.provider_ref` and `subscriptions.provider_ref`; missing refs block live actions. The API persists a PENDING execution before calling the provider and commits the local action, result, and audit event together. If the outcome is uncertain, the same reviewer can safely retry against the same key.
 
-1. Create an App Service using the Linux container option.
-2. Push the API image to a private Azure Container Registry.
-3. Configure the App Service to use that image and listen on port `8000`.
-4. Add the environment variables above in Configuration -> Application settings.
-5. Set Health check path to `/health/ready`.
-6. Add a custom domain such as `api.example.com`; Azure provisions HTTPS after DNS validation.
-7. Restrict inbound access to HTTPS and keep database/Redis credentials out of source control.
+## Backups and monitoring
 
-## Vercel
-
-1. Import the repository and set the project root to `apps/web`.
-2. Set `NEXT_PUBLIC_API_URL` to the Azure HTTPS URL.
-3. Add the frontend Sentry DSN and production environment.
-4. Deploy and add the frontend custom domain.
-5. Update Azure `CORS_ALLOWED_ORIGINS` to the exact Vercel/custom domain.
-
-## Sentry
-
-Create separate Sentry projects for `agent-v-api` and `agent-v-web`. Add the DSNs as environment variables. Add `SENTRY_AUTH_TOKEN` only to Vercel if source-map uploads are desired; never expose it as a `NEXT_PUBLIC_*` variable.
-
-Configure alerts for unhandled exceptions, Gemini failures, database errors, Redis errors, and failed approval executions.
-
-## Staging Acceptance Checks
-
-Before public traffic, verify:
-
-- `/health/live` returns 200.
-- `/health/ready` reports database and Redis ready.
-- Customer login succeeds.
-- Read-only subscription request returns grounded data.
-- Refund request creates a pending approval and does not execute.
-- Reviewer approval executes exactly once.
-- Rejection does not execute an action.
-- Cross-customer access returns 403.
-- Prompt-injection input does not reveal secrets or bypass approval.
-- Sentry receives a controlled staging exception.
-
-## Backups
-
-Enable Supabase daily backups and point-in-time recovery according to the selected plan. Test restoring a backup into a separate staging project before launch. Ensure Redis is treated as recoverable cache state, not the system of record.
+Enable Supabase backups/PITR and test restoring to a separate staging project. Configure Sentry DSNs and alert on readiness failures, authentication abuse, repeated provider uncertainty, and failed migrations. Redis is rate-limit/cache state and is not the system of record.

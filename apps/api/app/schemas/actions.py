@@ -10,6 +10,7 @@ class RefundProposalPayload(BaseModel):
     amount_minor: int = Field(gt=0, description="Refund amount in minor currency units (cents)")
     currency: str = "USD"
     reason: str
+    expected_version: Optional[int] = Field(default=None, ge=1)
 
 
 class CancellationProposalPayload(BaseModel):
@@ -17,6 +18,7 @@ class CancellationProposalPayload(BaseModel):
     customer_id: str
     reason: str
     cancel_at_period_end: bool = True
+    expected_version: Optional[int] = Field(default=None, ge=1)
 
 
 class ContactUpdatePayload(BaseModel):

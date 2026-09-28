@@ -32,9 +32,25 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(50), nullable=False)  # customer, support_agent, reviewer, auditor, admin
     customer_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("customers.id"), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    token_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
     customer: Mapped[Optional["Customer"]] = relationship("Customer", back_populates="users")
+
+
+class AuthToken(Base):
+    __tablename__ = "auth_tokens"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    purpose: Mapped[str] = mapped_column(String(32), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+    user: Mapped["User"] = relationship("User")
 
 
 class Customer(Base):
@@ -58,6 +74,7 @@ class Subscription(Base):
     __tablename__ = "subscriptions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    provider_ref: Mapped[Optional[str]] = mapped_column(String(255), unique=True, index=True, nullable=True)
     customer_id: Mapped[str] = mapped_column(String(36), ForeignKey("customers.id"), index=True, nullable=False)
     plan: Mapped[str] = mapped_column(String(100), nullable=False)
     status: Mapped[str] = mapped_column(String(50), default="active", nullable=False)  # active, canceled, paused
@@ -72,6 +89,7 @@ class Transaction(Base):
     __tablename__ = "transactions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    provider_ref: Mapped[Optional[str]] = mapped_column(String(255), unique=True, index=True, nullable=True)
     customer_id: Mapped[str] = mapped_column(String(36), ForeignKey("customers.id"), index=True, nullable=False)
     amount_minor: Mapped[int] = mapped_column(Integer, nullable=False)  # minor currency units, e.g. 5000 = $50.00
     currency: Mapped[str] = mapped_column(String(3), default="USD", nullable=False)
@@ -219,3 +237,5 @@ class AuditEvent(Base):
 # Indexing
 Index("ix_audit_ticket_created", AuditEvent.ticket_id, AuditEvent.created_at)
 Index("ix_proposal_status_risk", ActionProposal.status, ActionProposal.risk_level)
+
+Index("ix_auth_tokens_purpose_expires", AuthToken.purpose, AuthToken.expires_at)

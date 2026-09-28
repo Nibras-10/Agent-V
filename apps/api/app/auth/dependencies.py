@@ -10,7 +10,7 @@ from app.core.database import get_db
 from app.core.redis import redis_client
 from app.models.entities import User
 from app.schemas.auth import TokenData
-from app.auth.security import decode_access_token
+from app.auth.security import decode_access_token, ROLE_SCOPES
 
 security_scheme = HTTPBearer(auto_error=False)
 
@@ -29,6 +29,7 @@ async def get_current_user(
     try:
         payload = decode_access_token(token)
         user_id = payload.get("sub")
+        token_version = payload.get("ver", 0)
         if not user_id:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -50,11 +51,13 @@ async def get_current_user(
     stmt = select(User).where(User.id == user_id, User.is_active.is_(True))
     result = await db.execute(stmt)
     user = result.scalar_one_or_none()
-    if not user:
+    if not user or not user.is_active or not user.is_verified:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found or inactive",
+            detail="User not found, inactive, or not verified",
         )
+    if token_version != user.token_version:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication token has been revoked")
     return user
 
 
@@ -76,7 +79,9 @@ def require_scope(*scopes: str):
     ) -> User:
         token = credentials.credentials if credentials else ""
         payload = decode_access_token(token)
-        token_scopes = payload.get("scopes", [])
+        if payload.get("role") != current_user.role:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Role changed; sign in again")
+        token_scopes = ROLE_SCOPES.get(current_user.role, [])
         for s in scopes:
             if s not in token_scopes:
                 raise HTTPException(
@@ -105,11 +110,10 @@ def validate_customer_access(current_user: User, target_customer_id: str) -> Non
 
 async def enforce_rate_limit(key_prefix: str, identifier: str, max_requests: int = 30, window_seconds: int = 60):
     key = f"rate_limit:{key_prefix}:{identifier}"
-    current_val = await redis_client.get(key)
-    if current_val is not None and int(current_val) >= max_requests:
+    count = await redis_client.increment_window(key, window_seconds)
+    if count > max_requests:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Rate limit exceeded. Please try again later.",
+            headers={"Retry-After": str(window_seconds)},
         )
-    new_val = 1 if current_val is None else int(current_val) + 1
-    await redis_client.set(key, str(new_val), ex=window_seconds)

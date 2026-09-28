@@ -41,3 +41,15 @@ class RegisterRequest(BaseModel):
         if len(value) < 2:
             raise ValueError("Name must contain at least two non-space characters")
         return value
+
+
+class EmailRequest(BaseModel):
+    email: EmailStr
+
+
+class EmailTokenRequest(BaseModel):
+    token: str = Field(min_length=32, max_length=256)
+
+
+class PasswordResetRequest(EmailTokenRequest):
+    new_password: str = Field(min_length=12, max_length=128)

@@ -33,6 +33,7 @@ def create_access_token(
     role: str,
     customer_id: Optional[str] = None,
     expires_delta: Optional[timedelta] = None,
+    token_version: int = 0,
 ) -> str:
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
@@ -43,6 +44,7 @@ def create_access_token(
 
     payload: Dict[str, Any] = {
         "sub": user_id,
+        "ver": token_version,
         "email": email,
         "role": role,
         "customer_id": customer_id,

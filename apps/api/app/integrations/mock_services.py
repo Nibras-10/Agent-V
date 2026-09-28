@@ -49,6 +49,7 @@ class MockEmailService:
 class MockPaymentGateway:
     def __init__(self):
         self.refunds: list[dict[str, Any]] = []
+        self._by_key: dict[str, dict[str, Any]] = {}
 
     async def execute_refund(
         self,
@@ -57,7 +58,8 @@ class MockPaymentGateway:
         currency: str,
         idempotency_key: str,
     ) -> Dict[str, Any]:
-        # Gateway simulation
+        if idempotency_key in self._by_key:
+            return self._by_key[idempotency_key]
         record = {
             "refund_id": f"ref_{uuid.uuid4().hex[:12]}",
             "transaction_id": transaction_id,
@@ -67,6 +69,7 @@ class MockPaymentGateway:
             "status": "SUCCEEDED",
         }
         self.refunds.append(record)
+        self._by_key[idempotency_key] = record
         logger.info(f"Mock Payment Gateway processed refund: {record['refund_id']}")
         return record
 
@@ -74,6 +77,7 @@ class MockPaymentGateway:
 class MockSubscriptionGateway:
     def __init__(self):
         self.cancellations: list[dict[str, Any]] = []
+        self._by_key: dict[str, dict[str, Any]] = {}
 
     async def cancel_subscription(
         self,
@@ -81,6 +85,8 @@ class MockSubscriptionGateway:
         cancel_at_period_end: bool,
         idempotency_key: str,
     ) -> Dict[str, Any]:
+        if idempotency_key in self._by_key:
+            return self._by_key[idempotency_key]
         record = {
             "cancellation_id": f"sub_cancel_{uuid.uuid4().hex[:10]}",
             "subscription_id": subscription_id,
@@ -89,6 +95,7 @@ class MockSubscriptionGateway:
             "status": "PROCESSED",
         }
         self.cancellations.append(record)
+        self._by_key[idempotency_key] = record
         logger.info(f"Mock Subscription Gateway processed cancellation: {record['cancellation_id']}")
         return record
 

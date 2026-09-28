@@ -431,3 +431,8 @@ input { color:#1d1d1f; }
   .table-wrap th:last-child,.table-wrap td:last-child { padding-right:14px; }
   .audit-search { padding:14px; }
 }
+
+.auth-success { color:#1f6b37;background:#edf8f0;border:1px solid #c8e8d1;border-radius:10px;padding:11px 12px;font-size:13px; }
+.auth-forgot { text-align:right;margin-top:13px; }
+.auth-forgot button { border:0;background:transparent;color:#0066cc;font-size:12px;cursor:pointer; }
+.auth-forgot button:hover { text-decoration:underline; }

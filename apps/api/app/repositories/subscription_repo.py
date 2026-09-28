@@ -9,8 +9,10 @@ class SubscriptionRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def get_by_id(self, subscription_id: str) -> Optional[Subscription]:
+    async def get_by_id(self, subscription_id: str, for_update: bool = False) -> Optional[Subscription]:
         stmt = select(Subscription).where(Subscription.id == subscription_id)
+        if for_update:
+            stmt = stmt.with_for_update()
         res = await self.db.execute(stmt)
         return res.scalar_one_or_none()
 
@@ -37,6 +39,7 @@ class SubscriptionRepository:
         subscription_id: str,
         expected_version: int,
         cancel_at: Optional[datetime] = None,
+        commit: bool = True,
     ) -> Optional[Subscription]:
         stmt = select(Subscription).where(Subscription.id == subscription_id).with_for_update()
         res = await self.db.execute(stmt)
@@ -53,6 +56,7 @@ class SubscriptionRepository:
         sub.cancel_at = cancel_at or datetime.now(timezone.utc)
         sub.version += 1
 
-        await self.db.commit()
-        await self.db.refresh(sub)
+        if commit:
+            await self.db.commit()
+            await self.db.refresh(sub)
         return sub

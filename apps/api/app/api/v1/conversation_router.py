@@ -29,6 +29,8 @@ async def create_conversation(
 ):
     ticket_repo = TicketRepository(db)
     conv_repo = ConversationRepository(db)
+    if current_user.role != "customer":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only customer accounts can start a customer conversation")
 
     # If ticket_id not provided, create a new ticket for the customer
     if payload.ticket_id:
@@ -40,9 +42,10 @@ async def create_conversation(
     else:
         if not current_user.customer_id and current_user.role == "customer":
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Customer record missing")
-        cust_id = current_user.customer_id or "cust-admin-test"
+        if not current_user.customer_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Customer account is not linked to a customer record")
         ticket = await ticket_repo.create_ticket(
-            customer_id=cust_id,
+            customer_id=current_user.customer_id,
             subject=payload.subject or "Support Inquiry",
         )
         ticket_id = ticket.id
@@ -97,7 +100,8 @@ async def post_message(
     if not ticket:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Associated ticket not found")
 
-    # Object-level authorization
+    if current_user.role != "customer":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only customer accounts can submit customer messages")
     validate_customer_access(current_user, ticket.customer_id)
 
     workflow_service = WorkflowService(db)

@@ -5,6 +5,7 @@ import uuid
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 import sentry_sdk
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -40,12 +41,7 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Autonomous Support Agent API...")
 
     if settings.is_production:
-        if settings.DATABASE_URL.startswith("sqlite"):
-            raise RuntimeError("SQLite is not supported in production")
-        if settings.JWT_SIGNING_KEY.startswith("dev-"):
-            raise RuntimeError("A production JWT signing key is required")
-        if settings.LLM_PROVIDER == "fake":
-            raise RuntimeError("The fake LLM provider is not supported in production")
+        settings.validate_production()
 
     if not settings.is_production:
         async with engine.begin() as conn:
@@ -72,8 +68,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Autonomous Customer Support & Action Agent API",
     version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url=None if settings.is_production else "/docs",
+    redoc_url=None if settings.is_production else "/redoc",
     lifespan=lifespan,
 )
 
@@ -81,10 +77,12 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
 )
+
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
 
 
 @app.middleware("http")
@@ -101,8 +99,8 @@ async def security_and_tracing_middleware(request: Request, call_next):
     except Exception as exc:
         duration = round((time.time() - start_time) * 1000, 2)
         logger.error(
-            f"Unhandled exception processing request: {exc}",
-            extra={"request_id": request_id, "duration": duration, "error_code": "INTERNAL_SERVER_ERROR"},
+            "Unhandled exception processing request",
+            extra={"request_id": request_id, "duration": duration, "error_code": "INTERNAL_SERVER_ERROR", "exception_type": type(exc).__name__},
         )
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -115,7 +113,8 @@ async def security_and_tracing_middleware(request: Request, call_next):
     response.headers["X-Request-ID"] = request_id
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
-    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    if settings.is_production:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     response.headers["Content-Security-Policy"] = "default-src 'self'"
 
     logger.info(

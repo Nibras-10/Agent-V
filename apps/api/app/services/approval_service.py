@@ -2,16 +2,20 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from fastapi import HTTPException, status
 
-from app.models.entities import Approval, User
+from app.models.entities import Approval, User, AgentRun
 from app.repositories.approval_repo import ApprovalRepository
+from app.repositories.action_repo import ActionRepository
 from app.repositories.ticket_repo import TicketRepository
 from app.repositories.transaction_repo import TransactionRepository
 from app.repositories.subscription_repo import SubscriptionRepository
 from app.repositories.audit_repo import AuditRepository
 from app.tools.action_tools import ActionTools
-from app.schemas.actions import compute_proposal_hash, ActionResult
+from app.schemas.actions import compute_proposal_hash, RefundProposalPayload, CancellationProposalPayload
+from app.policies.refund_policy import RefundPolicy
+from app.policies.cancellation_policy import CancellationPolicy
 from app.observability.logging import logger
 from app.agents.graph import build_support_graph
 from langgraph.types import Command
@@ -25,6 +29,7 @@ class ApprovalService:
         self.txn_repo = TransactionRepository(db)
         self.sub_repo = SubscriptionRepository(db)
         self.audit_repo = AuditRepository(db)
+        self.action_repo = ActionRepository(db)
 
     async def decide_and_execute(
         self,
@@ -42,19 +47,24 @@ class ApprovalService:
         expires_at = approval.expires_at
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=timezone.utc)
-        if expires_at < now:
+        retrying_approved = approval.status == "APPROVED" and approval.reviewer_id == reviewer.id
+        if not retrying_approved and expires_at < now:
             await self.approval_repo.decide_approval(approval_id, "EXPIRED", reviewer.id, "Approval window expired")
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Approval request has expired")
 
-        if approval.status != "PENDING":
+        if approval.status != "PENDING" and not retrying_approved:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_409_CONFLICT,
                 detail=f"Approval has already been resolved with status: {approval.status}",
             )
 
         # 2. Check if customer is attempting to approve their own request (Strict prohibition)
         ticket = await self.ticket_repo.get_by_id(approval.ticket_id, load_conversations=False)
-        if ticket and reviewer.customer_id == ticket.customer_id:
+        if not ticket:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Approval ticket not found")
+        if reviewer.role not in {"reviewer", "admin"}:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only reviewers and administrators can decide approvals")
+        if reviewer.customer_id and reviewer.customer_id == ticket.customer_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Security violation: Customers cannot approve their own high-risk actions",
@@ -63,6 +73,9 @@ class ApprovalService:
         proposal = approval.proposal
         if not proposal:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Proposal associated with approval not found")
+        run = await self.db.get(AgentRun, proposal.run_id)
+        if not run or run.ticket_id != approval.ticket_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Approval is not bound to its originating ticket")
 
         # 3. Verify proposal canonical hash
         canonical_hash = compute_proposal_hash(proposal.type, proposal.payload_json)
@@ -79,8 +92,19 @@ class ApprovalService:
             )
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Proposal integrity check failed")
 
+        if decision == "APPROVE" and retrying_approved:
+            completed_action = await self.action_repo.get_by_proposal_id(proposal.id)
+            if completed_action and completed_action.status == "SUCCESS":
+                await self.ticket_repo.update_status(ticket.id, "resolved")
+                run.graph_status = "COMPLETED"
+                run.ended_at = datetime.now(timezone.utc)
+                await self.db.commit()
+                return {"status": "APPROVED", "message": "Action already completed", "action_result": completed_action.result_json}
+
         if decision == "REJECT":
-            updated = await self.approval_repo.decide_approval(approval_id, "REJECTED", reviewer.id, comment)
+            updated = await self.approval_repo.claim_decision(approval_id, "REJECTED", reviewer.id, comment)
+            if not updated:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Approval was already decided or expired")
             await self.ticket_repo.update_status(approval.ticket_id, "resolved")
             await self.audit_repo.log_event(
                 request_id=str(uuid.uuid4()),
@@ -106,26 +130,56 @@ class ApprovalService:
             txn = await self.txn_repo.get_by_id(txn_id)
             if not txn:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Transaction no longer exists")
-            if txn.customer_id != ticket.customer_id:
+            if txn.customer_id != ticket.customer_id or proposal.payload_json.get("customer_id") != ticket.customer_id:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Transaction customer mismatch")
-            if txn.refundable_minor < proposal.payload_json["amount_minor"]:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Transaction balance no longer sufficient")
+            if proposal.payload_json.get("expected_version") is not None and txn.version != proposal.payload_json["expected_version"]:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Transaction changed after proposal creation")
+            payload = RefundProposalPayload.model_validate(proposal.payload_json)
+            decision_check = RefundPolicy.evaluate(ticket.customer_id, txn, payload)
+            if not decision_check.allowed:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Refund proposal no longer passes current policy")
 
         elif proposal.type == "cancellation":
             sub_id = proposal.payload_json["subscription_id"]
             sub = await self.sub_repo.get_by_id(sub_id)
             if not sub or sub.status != "active":
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Subscription is no longer active")
-            if sub.customer_id != ticket.customer_id:
+            if sub.customer_id != ticket.customer_id or proposal.payload_json.get("customer_id") != ticket.customer_id:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Subscription customer mismatch")
+            if proposal.payload_json.get("expected_version") is not None and sub.version != proposal.payload_json["expected_version"]:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Subscription changed after proposal creation")
+            payload = CancellationProposalPayload.model_validate(proposal.payload_json)
+            decision_check = CancellationPolicy.evaluate(ticket.customer_id, sub, payload)
+            if not decision_check.allowed:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Cancellation proposal no longer passes current policy")
 
-        # Claim the approval atomically after all pre-execution checks.
-        claimed = await self.approval_repo.claim_for_approval(approval_id, reviewer.id, comment)
-        if not claimed:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Approval was already resolved or expired",
-            )
+        # Claims are atomic. A retry is allowed only for the reviewer who made the decision.
+        if retrying_approved:
+            existing_action = await self.action_repo.get_by_proposal_id(proposal.id)
+            if existing_action and existing_action.status == "PENDING":
+                # The prior graph resume may have ended after an uncertain provider response.
+                # Re-enter the idempotent executor directly using the same durable proposal key.
+                tools = ActionTools(self.db, reviewer.id, ticket.customer_id, ticket.id, run.id)
+                if proposal.type == "refund":
+                    recovered = await tools.execute_approved_refund(approval_id)
+                elif proposal.type == "cancellation":
+                    recovered = await tools.execute_approved_cancellation(approval_id)
+                else:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported recovery action")
+                if recovered.success:
+                    await self.ticket_repo.update_status(ticket.id, "resolved")
+                    run.graph_status = "COMPLETED"
+                    run.ended_at = datetime.now(timezone.utc)
+                    await self.db.commit()
+                else:
+                    await self.ticket_repo.update_status(ticket.id, "action_reconciliation")
+                    run.graph_status = "ACTION_RECONCILIATION"
+                    await self.db.commit()
+                return {"status": "APPROVED", "message": recovered.message, "action_result": recovered.model_dump()}
+        else:
+            claimed = await self.approval_repo.claim_for_approval(approval_id, reviewer.id, comment)
+            if not claimed:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Approval was already resolved or expired")
 
         graph = build_support_graph(self.db)
         final_state = await graph.ainvoke(
@@ -137,8 +191,18 @@ class ApprovalService:
 
         if exec_success:
             await self.ticket_repo.update_status(approval.ticket_id, "resolved")
-        else:
+            run.graph_status = "COMPLETED"
+            run.ended_at = datetime.now(timezone.utc)
+            await self.db.commit()
+        elif action_result.get("status") == "UNKNOWN":
+            await self.ticket_repo.update_status(approval.ticket_id, "action_reconciliation")
+            run.graph_status = "ACTION_RECONCILIATION"
+            await self.db.commit()
+        elif action_result.get("status") == "FAILED":
             await self.ticket_repo.update_status(approval.ticket_id, "failed")
+            run.graph_status = "FAILED"
+            run.ended_at = datetime.now(timezone.utc)
+            await self.db.commit()
 
         return {
             "status": "APPROVED",

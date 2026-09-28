@@ -123,24 +123,26 @@ class ApprovalRepository:
         await self.db.refresh(approval)
         return approval
 
-    async def claim_for_approval(
+    async def claim_decision(
         self,
         approval_id: str,
+        decision: str,
         reviewer_id: str,
         comment: Optional[str] = None,
     ) -> Optional[Approval]:
-        """Atomically claim a pending approval for execution."""
+        """Compare-and-set a single reviewer decision and proposal status in one transaction."""
+        if decision not in {"APPROVED", "REJECTED"}:
+            raise ValueError("Unsupported approval decision")
         now = datetime.now(timezone.utc)
-        db_now = now.replace(tzinfo=None)
         result = await self.db.execute(
             update(Approval)
             .where(
                 Approval.id == approval_id,
                 Approval.status == "PENDING",
-                Approval.expires_at >= db_now,
+                Approval.expires_at >= now,
             )
             .values(
-                status="APPROVED",
+                status=decision,
                 reviewer_id=reviewer_id,
                 comment=comment,
                 decided_at=now,
@@ -149,10 +151,18 @@ class ApprovalRepository:
         if result.rowcount != 1:
             await self.db.rollback()
             return None
-
         approval = await self.get_approval(approval_id)
         if approval and approval.proposal:
-            approval.proposal.status = "APPROVED"
+            approval.proposal.status = decision
         await self.db.commit()
-        await self.db.refresh(approval)
+        if approval:
+            await self.db.refresh(approval)
         return approval
+
+    async def claim_for_approval(
+        self,
+        approval_id: str,
+        reviewer_id: str,
+        comment: Optional[str] = None,
+    ) -> Optional[Approval]:
+        return await self.claim_decision(approval_id, "APPROVED", reviewer_id, comment)

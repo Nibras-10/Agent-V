@@ -40,6 +40,8 @@ async def list_approvals(
     current_user: User = Depends(require_scope("approval:read")),
     db: AsyncSession = Depends(get_db),
 ):
+    if current_user.role not in {"reviewer", "admin", "auditor"}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Approval queue access is restricted")
     repo = ApprovalRepository(db)
     approvals = await repo.list_all_approvals()
     return [map_approval_to_response(a) for a in approvals]
@@ -51,6 +53,8 @@ async def get_approval(
     current_user: User = Depends(require_scope("approval:read")),
     db: AsyncSession = Depends(get_db),
 ):
+    if current_user.role not in {"reviewer", "admin", "auditor"}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Approval access is restricted")
     repo = ApprovalRepository(db)
     approval = await repo.get_approval(id)
     if not approval:

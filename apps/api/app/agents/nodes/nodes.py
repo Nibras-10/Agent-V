@@ -54,6 +54,8 @@ class SupportWorkflowNodes:
 
         messages = state.get("messages", [])
         last_message = messages[-1]["content"] if messages else ""
+        if _looks_like_injection(last_message):
+            return {"status": "HANDED_OFF", "intent": "injection_attempt", "last_error_code": "UNTRUSTED_INSTRUCTION", "final_response": "I can help with your account, but I cannot follow instructions that attempt to change security rules or access internal data."}
 
         try:
             triage_res, tokens = await self.llm.generate_structured(
@@ -67,15 +69,19 @@ class SupportWorkflowNodes:
                 "confidence": triage_res.confidence,
                 "llm_call_count": state.get("llm_call_count", 0) + 1,
                 "token_usage": {"total_tokens": total_tokens},
-                "status": "RUNNING",
+                "status": "HANDED_OFF" if total_tokens > settings.MAX_TOTAL_TOKENS_PER_RUN else "RUNNING",
             }
+            if total_tokens > settings.MAX_TOTAL_TOKENS_PER_RUN:
+                updates["last_error_code"] = "TOKEN_BUDGET_EXCEEDED"
+                updates["final_response"] = "This request exceeded the automated support limit and has been routed to our support team."
+                return updates
             if triage_res.intent == "injection_attempt":
                 updates["final_response"] = (
                     "I cannot execute instructions that alter security boundaries or reveal internal systems."
                 )
             return updates
         except Exception as e:
-            logger.error(f"Triage error: {e}")
+            logger.error("Triage failed", extra={"error_type": type(e).__name__})
             retry_count = state.get("retry_count", 0) + 1
             if retry_count >= settings.MAX_AGENT_ATTEMPTS:
                 return {
@@ -105,11 +111,11 @@ class SupportWorkflowNodes:
         retrieved["customer_profile"] = profile
         tool_calls += 1
 
-        if intent in ["refund_request", "duplicate_incorrect_charge"]:
+        if intent in ["refund_request", "duplicate_incorrect_charge"] and tool_calls < settings.MAX_TOOL_CALLS_PER_RUN:
             txns = await read_tools.list_recent_transactions(limit=5)
             retrieved["recent_transactions"] = txns
             tool_calls += 1
-        elif intent in ["cancel_subscription", "account_question"]:
+        elif intent in ["cancel_subscription", "account_question"] and tool_calls < settings.MAX_TOOL_CALLS_PER_RUN:
             sub = await read_tools.get_subscription()
             retrieved["subscription"] = sub
             tool_calls += 1
@@ -123,6 +129,8 @@ class SupportWorkflowNodes:
         """Resolution agent: produce grounded response or typed action proposal."""
         if state.get("llm_call_count", 0) >= settings.MAX_LLM_CALLS_PER_RUN:
             return {"status": "HANDED_OFF", "last_error_code": "HANDOFF_LLM_BUDGET"}
+        if state.get("token_usage", {}).get("total_tokens", 0) >= settings.MAX_TOTAL_TOKENS_PER_RUN:
+            return {"status": "HANDED_OFF", "last_error_code": "TOKEN_BUDGET_EXCEEDED"}
 
         intent = state.get("intent", "")
         retrieved_context = state.get("retrieved_context", {})
@@ -147,6 +155,9 @@ class SupportWorkflowNodes:
                 "token_usage": {"total_tokens": total_tokens},
                 "final_response": res_output.response_text,
             }
+            if total_tokens > settings.MAX_TOTAL_TOKENS_PER_RUN:
+                updates.update(status="HANDED_OFF", last_error_code="TOKEN_BUDGET_EXCEEDED", final_response="This request exceeded the automated support limit and has been routed to our support team.")
+                return updates
 
             if res_output.needs_clarification:
                 updates["status"] = "WAITING_FOR_USER"
@@ -157,7 +168,7 @@ class SupportWorkflowNodes:
 
             return updates
         except Exception as e:
-            logger.error(f"Resolution error: {e}")
+            logger.error("Resolution failed", extra={"error_type": type(e).__name__})
             retry_count = state.get("retry_count", 0) + 1
             if retry_count >= settings.MAX_AGENT_ATTEMPTS:
                 return {
@@ -194,10 +205,8 @@ class SupportWorkflowNodes:
             # Check if this transaction exists in customer's recent transactions
             txns = state.get("retrieved_context", {}).get("recent_transactions", [])
             target_txn = next((t for t in txns if t["id"] == txn_id), None)
-            if not target_txn and txns:
-                # Use the most recent transaction for refund if LLM passed a generic id
-                txn_id = txns[0]["id"]
-                amount_minor = min(amount_minor or 5000, txns[0]["refundable_minor"])
+            if not target_txn:
+                return {"status": "HANDED_OFF", "last_error_code": "POLICY_DENIED_TRANSACTION_NOT_IN_CUSTOMER_CONTEXT", "final_response": "I could not match that charge to your account, so I have forwarded the request to support."}
 
             proposal_res = await action_tools.create_refund_proposal(
                 transaction_id=txn_id,
@@ -351,3 +360,14 @@ class SupportWorkflowNodes:
             "status": status,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
+
+
+def _looks_like_injection(message: str) -> bool:
+    text = message.lower()
+    markers = (
+        "ignore previous instructions", "ignore all instructions", "disregard your instructions",
+        "reveal your system prompt", "show me your system prompt", "developer message",
+        "act as an administrator", "pretend you are admin", "bypass approval",
+        "without approval", "dump the database", "reveal api key",
+    )
+    return any(marker in text for marker in markers)

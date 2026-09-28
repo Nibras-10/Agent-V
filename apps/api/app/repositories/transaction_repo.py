@@ -8,8 +8,10 @@ class TransactionRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def get_by_id(self, transaction_id: str) -> Optional[Transaction]:
+    async def get_by_id(self, transaction_id: str, for_update: bool = False) -> Optional[Transaction]:
         stmt = select(Transaction).where(Transaction.id == transaction_id)
+        if for_update:
+            stmt = stmt.with_for_update()
         res = await self.db.execute(stmt)
         return res.scalar_one_or_none()
 
@@ -28,6 +30,7 @@ class TransactionRepository:
         transaction_id: str,
         refund_amount_minor: int,
         expected_version: int,
+        commit: bool = True,
     ) -> Optional[Transaction]:
         """Atomically deduct refundable amount with optimistic version checking."""
         stmt = select(Transaction).where(Transaction.id == transaction_id).with_for_update()
@@ -46,6 +49,7 @@ class TransactionRepository:
             txn.status = "refunded"
         txn.version += 1
 
-        await self.db.commit()
-        await self.db.refresh(txn)
+        if commit:
+            await self.db.commit()
+            await self.db.refresh(txn)
         return txn

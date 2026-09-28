@@ -1,34 +1,20 @@
-# Multi-stage non-root Dockerfile for FastAPI Backend
 FROM python:3.12-slim AS builder
-
-WORKDIR /app
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY pyproject.toml .
-RUN pip install --upgrade pip && \
-    pip wheel --no-cache-dir --no-deps --wheel-dir /app/wheels -e .
+WORKDIR /build
+COPY requirements.txt .
+RUN python -m pip install --upgrade pip && python -m pip wheel --no-cache-dir --wheel-dir=/wheels -r requirements.txt
 
 FROM python:3.12-slim AS runner
-
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/app/apps/api
 WORKDIR /app
-
-# Run as non-root user
-RUN groupadd -g 1000 appgroup && \
-    useradd -u 1000 -g appgroup -s /bin/bash -m appuser
-
-COPY --from=builder /app/wheels /wheels
-RUN pip install --no-cache-dir /wheels/* uvicorn fastapi pydantic pydantic-settings sqlalchemy alembic asyncpg aiosqlite redis pyjwt argon2-cffi httpx email-validator langgraph langgraph-checkpoint-postgres psycopg[binary,pool] langchain-core opentelemetry-api opentelemetry-sdk python-dotenv cryptography sentry-sdk
-
+RUN groupadd --system --gid 10001 agent && useradd --system --uid 10001 --gid agent --home-dir /app agent
+COPY --from=builder /wheels /wheels
+COPY requirements.txt .
+RUN python -m pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt && rm -rf /wheels
 COPY apps/api /app/apps/api
-COPY pyproject.toml /app/pyproject.toml
-
-USER appuser
-
-ENV PYTHONPATH=/app/apps/api
+COPY migrations /app/migrations
+COPY alembic.ini /app/alembic.ini
+COPY docker/start-api.sh /app/docker/start-api.sh
+RUN chmod 0555 /app/docker/start-api.sh && chown -R agent:agent /app
+USER agent
 EXPOSE 8000
-
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["/app/docker/start-api.sh"]

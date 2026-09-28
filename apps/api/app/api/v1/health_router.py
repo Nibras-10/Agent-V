@@ -4,6 +4,7 @@ from sqlalchemy import text
 
 from app.core.database import get_db
 from app.core.redis import redis_client
+from app.core.config import settings
 
 router = APIRouter(tags=["Health"])
 
@@ -32,7 +33,7 @@ async def readiness(
     except Exception:
         redis_ok = False
 
-    if not db_ok:
+    if not db_ok or (settings.is_production and not redis_ok):
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return {"status": "degraded", "database": db_ok, "redis": redis_ok}
 
