@@ -22,3 +22,4 @@ apps/web/.next/
 
 # Alembic
 migrations/__pycache__/
+chat.json
