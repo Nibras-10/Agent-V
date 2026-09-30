@@ -9,10 +9,21 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("transactions", sa.Column("provider_ref", sa.String(length=255), nullable=True))
-    op.add_column("subscriptions", sa.Column("provider_ref", sa.String(length=255), nullable=True))
-    op.create_index("ix_transactions_provider_ref", "transactions", ["provider_ref"], unique=True)
-    op.create_index("ix_subscriptions_provider_ref", "subscriptions", ["provider_ref"], unique=True)
+    bind = op.get_bind()
+    for table in ("transactions", "subscriptions"):
+        columns = {column["name"] for column in sa.inspect(bind).get_columns(table)}
+        if "provider_ref" not in columns:
+            op.add_column(table, sa.Column("provider_ref", sa.String(length=255), nullable=True))
+
+    for table in ("transactions", "subscriptions"):
+        name = f"ix_{table}_provider_ref"
+        indexes = {index["name"]: index for index in sa.inspect(bind).get_indexes(table)}
+        existing = indexes.get(name)
+        if existing:
+            if existing["column_names"] != ["provider_ref"] or not existing["unique"]:
+                raise RuntimeError(f"Existing index {name} does not match migration 003; resolve it before retrying.")
+        else:
+            op.create_index(name, table, ["provider_ref"], unique=True)
 
 
 def downgrade() -> None:
