@@ -31,6 +31,9 @@ async def seed_demo_data() -> None:
     password = os.getenv("DEMO_CUSTOMER_PASSWORD", "")
     if len(password) < 16:
         raise SystemExit("Set DEMO_CUSTOMER_PASSWORD to a demo-only password of at least 16 characters.")
+    staff_password = os.getenv("DEMO_STAFF_PASSWORD", "")
+    if staff_password and len(staff_password) < 16:
+        raise SystemExit("DEMO_STAFF_PASSWORD must be at least 16 characters when provided.")
 
     now = datetime.now(timezone.utc)
     customers = [
@@ -57,6 +60,20 @@ async def seed_demo_data() -> None:
             token_version=0, created_at=now - timedelta(days=45),
         ),
     ]
+    if staff_password:
+        staff_hash = hash_password(staff_password)
+        users.extend([
+            User(
+                id="demo_user_reviewer_001", email="demo.reviewer@example.com", password_hash=staff_hash,
+                role="reviewer", customer_id=None, is_active=True, is_verified=True,
+                token_version=0, created_at=now - timedelta(days=7),
+            ),
+            User(
+                id="demo_user_agent_001", email="demo.agent@example.com", password_hash=staff_hash,
+                role="support_agent", customer_id=None, is_active=True, is_verified=True,
+                token_version=0, created_at=now - timedelta(days=7),
+            ),
+        ])
     tickets = [
         SupportTicket(
             id="demo_ticket_billing_001", customer_id=customers[0].id,
@@ -147,7 +164,12 @@ async def seed_demo_data() -> None:
     print("Synthetic production demo data is ready.")
     print("Customer accounts: demo.alice@example.com and demo.jordan@example.com")
     print("Both use the password configured in DEMO_CUSTOMER_PASSWORD.")
-    print("No staff accounts or executable approval proposals were created.")
+    if staff_password:
+        print("Staff accounts: demo.reviewer@example.com and demo.agent@example.com")
+        print("Both use the password configured in DEMO_STAFF_PASSWORD.")
+    else:
+        print("Set DEMO_STAFF_PASSWORD and rerun the seed to add staff demo accounts.")
+    print("No executable approval proposals were created.")
 
 
 if __name__ == "__main__":

@@ -14,6 +14,10 @@ class MessageResponse(BaseModel):
     actor_id: Optional[str] = None
     content: str
     created_at: datetime
+    workflow_status: Optional[str] = None
+    intent: Optional[str] = None
+    approval_id: Optional[str] = None
+    recommended_action: Optional[dict] = None
 
 
 class ConversationCreate(BaseModel):

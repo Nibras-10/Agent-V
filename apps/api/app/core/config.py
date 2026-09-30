@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     # Financial action provider contract. The provider must honor Idempotency-Key.
     ACTION_GATEWAY_URL: str = ""
     ACTION_GATEWAY_API_KEY: str = ""
+    # When enabled, approved financial actions update synthetic records only.
+    DEMO_MODE: bool = False
 
     # LLM Settings
     LLM_PROVIDER: str = "fake"  # 'fake', 'openai', 'gemini', etc.
@@ -95,7 +97,7 @@ class Settings(BaseSettings):
             raise RuntimeError("Production requires a configured Gemini API key")
         if not all((self.SMTP_HOST, self.SMTP_USERNAME, self.SMTP_PASSWORD, self.SMTP_FROM_EMAIL)):
             raise RuntimeError("Production requires SMTP credentials for account verification and recovery")
-        if not self.ACTION_GATEWAY_URL.startswith("https://") or not self.ACTION_GATEWAY_API_KEY:
+        if not self.DEMO_MODE and (not self.ACTION_GATEWAY_URL.startswith("https://") or not self.ACTION_GATEWAY_API_KEY):
             raise RuntimeError("Production requires an HTTPS action gateway and API key")
         if not self.CORS_ALLOWED_ORIGINS or "*" in self.CORS_ALLOWED_ORIGINS:
             raise RuntimeError("Production CORS origins must be explicit")

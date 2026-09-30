@@ -11,7 +11,7 @@ router = APIRouter(tags=["Health"])
 
 @router.get("/health/live", status_code=status.HTTP_200_OK)
 async def liveness():
-    return {"status": "alive"}
+    return {"status": "alive", "demo_mode": settings.DEMO_MODE}
 
 
 @router.get("/health/ready")

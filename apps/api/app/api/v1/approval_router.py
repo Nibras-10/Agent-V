@@ -1,5 +1,7 @@
+import uuid
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -12,6 +14,8 @@ from app.auth.dependencies import (
 from app.schemas.approval import ApprovalResponse, ApprovalDecisionRequest
 from app.repositories.approval_repo import ApprovalRepository
 from app.services.approval_service import ApprovalService
+from app.models.entities import Approval, Conversation, Message
+from app.repositories.audit_repo import AuditRepository
 
 router = APIRouter(prefix="/approvals", tags=["Approvals"])
 
@@ -77,4 +81,24 @@ async def decide_approval(
         reviewer=current_user,
         comment=decision_req.comment,
     )
+    approval = await db.get(Approval, id)
+    if approval and result.get("status") in {"APPROVED", "REJECTED"}:
+        conversation = await db.scalar(
+            select(Conversation)
+            .where(Conversation.ticket_id == approval.ticket_id)
+            .order_by(Conversation.created_at.desc())
+        )
+        if conversation:
+            outcome = result.get("message", "Your support request was reviewed.")
+            content = f"Support team update (request {id[:8]}): {outcome}"
+            existing = await db.scalar(
+                select(Message.id).where(Message.conversation_id == conversation.id, Message.content == content)
+            )
+            if not existing:
+                db.add(Message(conversation_id=conversation.id, actor_type="agent", actor_id=None, content=content))
+                await AuditRepository(db).log_event(
+                    request_id=str(uuid.uuid4()), actor_id=current_user.id, actor_type=current_user.role,
+                    event_type="CUSTOMER_NOTIFIED_OF_REVIEW", resource_type="approval", resource_id=id,
+                    ticket_id=approval.ticket_id, metadata={"decision": result.get("status")},
+                )
     return result

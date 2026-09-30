@@ -40,6 +40,12 @@ services:
         sync: false
       - key: ACTION_GATEWAY_API_KEY
         sync: false
+      - key: DEMO_MODE
+        value: "true"
+      - key: DEMO_STAFF_PASSWORD
+        sync: false
+      - key: DEMO_CUSTOMER_PASSWORD
+        sync: false
       - key: JWT_SIGNING_KEY
         sync: false
       - key: JWT_ISSUER

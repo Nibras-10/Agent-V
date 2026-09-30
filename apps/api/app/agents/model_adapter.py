@@ -117,7 +117,7 @@ class FakeLLMAdapter(BaseLLMAdapter):
                     missing_info=[],
                 ), self.fixed_token_cost
 
-            if any(term in user_lower for term in ["update phone", "update name", "change phone", "change name"]):
+            if any(term in user_lower for term in ["update phone", "update name", "change phone", "change name", "update contact"]):
                 return TriageOutput(
                     intent="contact_update",
                     confidence=0.90,
@@ -156,13 +156,17 @@ class FakeLLMAdapter(BaseLLMAdapter):
 
             if intent == "refund_request":
                 # Look for transaction in prompt
-                txn_match = re.search(r"txn_[a-zA-Z0-9_\-]+", user_prompt)
+                txn_match = re.search(r"(?:txn_|demo_transaction_)[a-zA-Z0-9_\-]+", user_prompt)
                 txn_id = txn_match.group(0) if txn_match else "mock-txn-123"
+                amount_match = re.search(r"amount_minor['\"]?\s*:\s*(\d+)", user_prompt)
+                amount_minor = int(amount_match.group(1)) if amount_match else 5000
+                currency_match = re.search(r"currency['\"]?\s*:\s*['\"]([A-Z]{3})", user_prompt)
+                currency = currency_match.group(1) if currency_match else "USD"
                 return ResolutionOutput(
                     response_text=f"I have reviewed your request for a refund regarding transaction {txn_id}. As this is a financial transaction, I have created a refund proposal which requires reviewer approval.",
                     proposed_action=ActionProposalOutput(
                         action_type="refund",
-                        parameters={"transaction_id": txn_id, "amount_minor": 5000, "currency": "USD"},
+                        parameters={"transaction_id": txn_id, "amount_minor": amount_minor, "currency": currency},
                         reason="Customer reported duplicate charge",
                         requires_approval=True,
                         risk="HIGH",
@@ -170,7 +174,7 @@ class FakeLLMAdapter(BaseLLMAdapter):
                 ), self.fixed_token_cost
 
             if intent == "cancel_subscription":
-                sub_match = re.search(r"sub_[a-zA-Z0-9_\-]+", user_prompt)
+                sub_match = re.search(r"(?:sub_|demo_subscription_)[a-zA-Z0-9_\-]+", user_prompt)
                 sub_id = sub_match.group(0) if sub_match else "mock-sub-123"
                 return ResolutionOutput(
                     response_text="I have prepared a cancellation proposal for your subscription. Our human review team will review and finalize the cancellation.",

@@ -17,7 +17,7 @@ class HandoffRepository:
         # Check if already enqueued to prevent duplicate handoffs
         stmt = (
             select(HumanQueue)
-            .where(HumanQueue.ticket_id == ticket_id, HumanQueue.status == "PENDING")
+            .where(HumanQueue.ticket_id == ticket_id, HumanQueue.status.in_(["PENDING", "ASSIGNED"]))
         )
         res = await self.db.execute(stmt)
         existing = res.scalar_one_or_none()
@@ -38,7 +38,7 @@ class HandoffRepository:
     async def list_pending(self, limit: int = 50) -> List[HumanQueue]:
         stmt = (
             select(HumanQueue)
-            .where(HumanQueue.status == "PENDING")
+            .where(HumanQueue.status.in_(["PENDING", "ASSIGNED"]))
             .order_by(HumanQueue.created_at.desc())
             .limit(limit)
         )

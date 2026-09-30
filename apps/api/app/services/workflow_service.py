@@ -120,4 +120,5 @@ class WorkflowService:
             "workflow_status": final_status,
             "intent": final_state.get("intent"),
             "approval_id": final_state.get("approval_id"),
+            "proposed_action": final_state.get("proposed_action"),
         }

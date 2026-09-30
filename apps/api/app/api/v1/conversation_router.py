@@ -119,4 +119,8 @@ async def post_message(
         actor_id=agent_msg.actor_id,
         content=agent_msg.content,
         created_at=agent_msg.created_at,
+        workflow_status=result.get("workflow_status"),
+        intent=result.get("intent"),
+        approval_id=result.get("approval_id"),
+        recommended_action=result.get("proposed_action"),
     )

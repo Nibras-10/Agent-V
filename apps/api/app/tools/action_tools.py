@@ -216,11 +216,11 @@ class ActionTools:
             request_id=str(uuid.uuid4()),
             actor_id=self.actor_id,
             actor_type="agent",
-            event_type="CONTACT_UPDATED",
+            event_type="DEMO_CONTACT_UPDATED" if settings.DEMO_MODE else "CONTACT_UPDATED",
             resource_type="customer",
             resource_id=self.customer_id,
             ticket_id=self.ticket_id,
-            metadata=res_data,
+            metadata={**res_data, "simulated": settings.DEMO_MODE},
         )
 
         return ActionResult(
@@ -228,8 +228,8 @@ class ActionTools:
             action_type="contact_update",
             idempotency_key=idempotency_key,
             status="SUCCESS",
-            message="Contact details updated successfully.",
-            data=res_data,
+            message="Demo contact details updated in the sample account." if settings.DEMO_MODE else "Contact details updated successfully.",
+            data={**res_data, "simulated": settings.DEMO_MODE},
         )
 
     async def execute_approved_refund(self, approval_id: str) -> ActionResult:
@@ -262,15 +262,18 @@ class ActionTools:
         if payload.expected_version is not None and txn.version != payload.expected_version:
             return ActionResult(success=False, action_type="refund", idempotency_key=idempotency_key, status="FAILED", message="Transaction changed after approval was requested")
 
-        if settings.is_production and not txn.provider_ref:
+        if settings.is_production and not settings.DEMO_MODE and not txn.provider_ref:
             return ActionResult(success=False, action_type="refund", idempotency_key=idempotency_key, status="FAILED", message="Transaction is missing its payment processor reference")
         try:
-            gateway_result = await payment_gateway.execute_refund(
-                transaction_id=txn.provider_ref or payload.transaction_id,
-                amount_minor=payload.amount_minor,
-                currency=payload.currency,
-                idempotency_key=idempotency_key,
-            )
+            if settings.DEMO_MODE:
+                gateway_result = {"id": f"demo-refund-{uuid.uuid4().hex[:12]}", "refund_id": f"demo-refund-{uuid.uuid4().hex[:12]}", "status": "simulated"}
+            else:
+                gateway_result = await payment_gateway.execute_refund(
+                    transaction_id=txn.provider_ref or payload.transaction_id,
+                    amount_minor=payload.amount_minor,
+                    currency=payload.currency,
+                    idempotency_key=idempotency_key,
+                )
         except Exception as exc:
             logger.error("Refund gateway outcome is uncertain", extra={"approval_id": approval_id, "error_type": type(exc).__name__})
             return ActionResult(success=False, action_type="refund", idempotency_key=idempotency_key, status="UNKNOWN", message="Refund result is being reconciled; retrying is safe.")
@@ -285,7 +288,7 @@ class ActionTools:
             if not updated:
                 raise RuntimeError("Transaction disappeared during refund")
             provider_result = {key: gateway_result[key] for key in ("id", "refund_id", "status") if key in gateway_result}
-            result_json = {"gateway_result": provider_result, "refunded_minor": payload.amount_minor, "remaining_refundable_minor": updated.refundable_minor, "new_version": updated.version}
+            result_json = {"gateway_result": provider_result, "refunded_minor": payload.amount_minor, "remaining_refundable_minor": updated.refundable_minor, "new_version": updated.version, "simulated": settings.DEMO_MODE}
             proposal.status = "EXECUTED"
             await self.action_repo.complete_execution(execution, result_json, "SUCCESS")
             await self.audit_repo.log_event(
@@ -293,14 +296,15 @@ class ActionTools:
                 actor_type="reviewer", event_type="REFUND_EXECUTED",
                 resource_type="transaction", resource_id=payload.transaction_id,
                 ticket_id=approval.ticket_id,
-                metadata={"amount_minor": payload.amount_minor, "idempotency_key": idempotency_key},
+                metadata={"amount_minor": payload.amount_minor, "idempotency_key": idempotency_key, "simulated": settings.DEMO_MODE},
             )
         except Exception as exc:
             await self.db.rollback()
             logger.error("Refund database reconciliation failed", extra={"approval_id": approval_id, "error_type": type(exc).__name__})
             return ActionResult(success=False, action_type="refund", idempotency_key=idempotency_key, status="UNKNOWN", message="Refund result is being reconciled; retrying is safe.")
 
-        return ActionResult(success=True, action_type="refund", idempotency_key=idempotency_key, status="SUCCESS", message=f"Refund of {payload.amount_minor / 100:.2f} USD executed successfully.", data=result_json)
+        message = f"Demo refund of {payload.amount_minor / 100:.2f} USD simulated successfully." if settings.DEMO_MODE else f"Refund of {payload.amount_minor / 100:.2f} USD executed successfully."
+        return ActionResult(success=True, action_type="refund", idempotency_key=idempotency_key, status="SUCCESS", message=message, data=result_json)
 
     async def execute_approved_cancellation(self, approval_id: str) -> ActionResult:
         """Reserve intent before provider call; commit DB result and execution record atomically."""
@@ -330,14 +334,17 @@ class ActionTools:
         if payload.expected_version is not None and sub.version != payload.expected_version:
             return ActionResult(success=False, action_type="cancellation", idempotency_key=idempotency_key, status="FAILED", message="Subscription changed after approval was requested")
 
-        if settings.is_production and not sub.provider_ref:
+        if settings.is_production and not settings.DEMO_MODE and not sub.provider_ref:
             return ActionResult(success=False, action_type="cancellation", idempotency_key=idempotency_key, status="FAILED", message="Subscription is missing its upstream processor reference")
         try:
-            gateway_result = await subscription_gateway.cancel_subscription(
-                subscription_id=sub.provider_ref or payload.subscription_id,
-                cancel_at_period_end=payload.cancel_at_period_end,
-                idempotency_key=idempotency_key,
-            )
+            if settings.DEMO_MODE:
+                gateway_result = {"id": f"demo-cancel-{uuid.uuid4().hex[:12]}", "cancellation_id": f"demo-cancel-{uuid.uuid4().hex[:12]}", "status": "simulated"}
+            else:
+                gateway_result = await subscription_gateway.cancel_subscription(
+                    subscription_id=sub.provider_ref or payload.subscription_id,
+                    cancel_at_period_end=payload.cancel_at_period_end,
+                    idempotency_key=idempotency_key,
+                )
         except Exception as exc:
             logger.error("Cancellation gateway outcome is uncertain", extra={"approval_id": approval_id, "error_type": type(exc).__name__})
             return ActionResult(success=False, action_type="cancellation", idempotency_key=idempotency_key, status="UNKNOWN", message="Cancellation result is being reconciled; retrying is safe.")
@@ -351,21 +358,22 @@ class ActionTools:
             if not updated:
                 raise RuntimeError("Subscription disappeared during cancellation")
             provider_result = {key: gateway_result[key] for key in ("id", "cancellation_id", "status") if key in gateway_result}
-            result_json = {"gateway_result": provider_result, "status": "canceled", "version": updated.version}
+            result_json = {"gateway_result": provider_result, "status": "canceled", "version": updated.version, "simulated": settings.DEMO_MODE}
             proposal.status = "EXECUTED"
             await self.action_repo.complete_execution(execution, result_json, "SUCCESS")
             await self.audit_repo.log_event(
                 request_id=str(uuid.uuid4()), actor_id=approval.reviewer_id or self.actor_id,
                 actor_type="reviewer", event_type="SUBSCRIPTION_CANCELED",
                 resource_type="subscription", resource_id=payload.subscription_id,
-                ticket_id=approval.ticket_id, metadata={"idempotency_key": idempotency_key},
+                ticket_id=approval.ticket_id, metadata={"idempotency_key": idempotency_key, "simulated": settings.DEMO_MODE},
             )
         except Exception as exc:
             await self.db.rollback()
             logger.error("Cancellation database reconciliation failed", extra={"approval_id": approval_id, "error_type": type(exc).__name__})
             return ActionResult(success=False, action_type="cancellation", idempotency_key=idempotency_key, status="UNKNOWN", message="Cancellation result is being reconciled; retrying is safe.")
 
-        return ActionResult(success=True, action_type="cancellation", idempotency_key=idempotency_key, status="SUCCESS", message="Subscription canceled successfully.", data=result_json)
+        message = "Demo subscription cancellation simulated successfully." if settings.DEMO_MODE else "Subscription canceled successfully."
+        return ActionResult(success=True, action_type="cancellation", idempotency_key=idempotency_key, status="SUCCESS", message=message, data=result_json)
 
     async def add_crm_note(self, note: str) -> Dict[str, Any]:
         return await crm_service.add_note(self.customer_id, self.ticket_id, note)
