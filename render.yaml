@@ -4,7 +4,7 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install --upgrade pip && pip install -r requirements.txt
-    startCommand: PYTHONPATH=apps/api alembic upgrade head && PYTHONPATH=apps/api uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    startCommand: PYTHONPATH=apps/api alembic upgrade head && if [ "${SEED_DEMO_DATA:-false}" = "true" ]; then PYTHONPATH=apps/api python scripts/seed_demo_data.py; fi && PYTHONPATH=apps/api uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health/ready
     autoDeploy: true
     envVars:
