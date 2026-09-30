@@ -80,16 +80,16 @@ async def seed_demo_data() -> None:
         Conversation(id="demo_conversation_subscription_003", ticket_id=tickets[2].id, channel="web", created_at=now - timedelta(days=1)),
     ]
     messages = [
-        Message(id="demo_message_billing_customer_001", conversation_id=conversations[0].id,
+        Message(id="demo_msg_bill_cust_001", conversation_id=conversations[0].id,
                 actor_type="customer", actor_id=users[0].id,
                 content="I have a question about the $49.00 charge on my demo account.", created_at=now - timedelta(hours=2)),
-        Message(id="demo_message_billing_agent_002", conversation_id=conversations[0].id,
+        Message(id="demo_msg_bill_agent_002", conversation_id=conversations[0].id,
                 actor_type="agent", actor_id=None,
                 content="I can help review that demo charge. Would you like me to check its status and date?", created_at=now - timedelta(hours=2) + timedelta(minutes=1)),
-        Message(id="demo_message_handoff_customer_003", conversation_id=conversations[1].id,
+        Message(id="demo_msg_handoff_cust_003", conversation_id=conversations[1].id,
                 actor_type="customer", actor_id=users[0].id,
                 content="Please connect me with a person about my demo account.", created_at=now - timedelta(hours=1)),
-        Message(id="demo_message_subscription_customer_004", conversation_id=conversations[2].id,
+        Message(id="demo_msg_sub_cust_004", conversation_id=conversations[2].id,
                 actor_type="customer", actor_id=users[1].id,
                 content="Can you explain why my demo subscription is paused?", created_at=now - timedelta(days=1)),
     ]
